@@ -7,6 +7,7 @@ function sms_render_frontend() {
     $current_page_id = get_queried_object_id();
     if (!$current_page_id) return;
 
+    // Verificar si esta página tiene un botón configurado
     $buttons_config = get_option('sms_buttons_config', []);
     $active_btn = null;
     
@@ -19,10 +20,11 @@ function sms_render_frontend() {
     }
     if (!$active_btn) return;
 
+    // Contar proveedores disponibles
     $users = get_users();
     $provider_count = 0;
     foreach ($users as $u) {
-        $subs = get_user_meta($u->ID, 'sms_approved_services', true); // Contar solo aprobados
+        $subs = get_user_meta($u->ID, 'sms_approved_services', true); 
         if (is_array($subs) && in_array($current_page_id, $subs)) $provider_count++;
     }
 
@@ -73,11 +75,11 @@ function sms_render_frontend() {
                     </div>
 
                     <select name="country" class="sms-input" id="smsCountrySel" onchange="updateSmsCode()">
-                        <option value="Colombia" data-code="+57">???? Colombia (+57)</option>
-                        <option value="Mexico" data-code="+52">???? M&eacute;xico (+52)</option>
-                        <option value="Peru" data-code="+51">???? Per&uacute; (+51)</option>
-                        <option value="Espana" data-code="+34">???? Espa&ntilde;a (+34)</option>
-                        <option value="USA" data-code="+1">???? USA (+1)</option>
+                        <option value="Colombia" data-code="+57">🇨🇴 Colombia (+57)</option>
+                        <option value="Mexico" data-code="+52">🇲🇽 M&eacute;xico (+52)</option>
+                        <option value="Peru" data-code="+51">🇵🇪 Per&uacute; (+51)</option>
+                        <option value="Espana" data-code="+34">🇪🇸 Espa&ntilde;a (+34)</option>
+                        <option value="USA" data-code="+1">🇺🇸 USA (+1)</option>
                     </select>
 
                     <input type="text" name="city" placeholder="Ciudad" class="sms-input" required>
@@ -107,7 +109,7 @@ function sms_render_frontend() {
             </div>
 
             <div id="smsStep2" style="display:none; text-align:center;">
-                <h3>?? C&oacute;digo</h3>
+                <h3>&#128272; C&oacute;digo</h3>
                 <input type="text" id="otpInput" class="sms-input" placeholder="0000" style="text-align:center; font-size:24px;">
                 <input type="hidden" id="tempLeadId">
                 <button onclick="verifyOtp()" class="sms-btn-submit">Verificar</button>
@@ -115,8 +117,9 @@ function sms_render_frontend() {
             </div>
 
             <div id="smsStep3" style="display:none; text-align:center;">
-                <h2 style="color:green;">?</h2>
+                <h2 style="color:green; font-size: 50px; margin: 0;">&#9989;</h2>
                 <h3>&iexcl;Enviado!</h3>
+                <p>Tus datos han sido verificados. Las empresas te contactar&aacute;n pronto.</p>
                 <button onclick="closeSmsModal()" class="sms-btn-submit">Cerrar</button>
             </div>
         </div>
@@ -150,7 +153,15 @@ function sms_render_frontend() {
                     document.getElementById('smsStep1').style.display='none';
                     document.getElementById('smsStepWaitInteraction').style.display='block';
                     document.getElementById('tempLeadId').value = d.data.lead_id;
-                } else { alert(d.data); btn.disabled=false; btn.innerHTML='Continuar'; }
+                } else { 
+                    alert(d.data || 'Error al procesar solicitud'); 
+                    btn.disabled=false; 
+                    btn.innerHTML='Continuar'; 
+                }
+            }).catch(err => {
+                alert('Error de conexión');
+                btn.disabled=false;
+                btn.innerHTML='Continuar';
             });
         });
 
@@ -159,25 +170,31 @@ function sms_render_frontend() {
             fd.append('action', 'sms_verify_otp');
             fd.append('lead_id', document.getElementById('tempLeadId').value);
             fd.append('code', document.getElementById('otpInput').value);
+            
             fetch('<?php echo admin_url('admin-ajax.php'); ?>', {method:'POST', body:fd}).then(r=>r.json()).then(d=>{
                 if(d.success){
                     document.getElementById('smsStep2').style.display='none';
                     document.getElementById('smsStep3').style.display='block';
-                } else { document.getElementById('otpError').innerText = 'C��digo incorrecto'; }
+                } else { document.getElementById('otpError').innerText = 'Código incorrecto'; }
             });
         }
     </script>
     <?php
 }
 
-// AJAX (Igual que antes)
+// ============================================================
+// LOGICA AJAX (Backend)
+// ============================================================
+
 add_action('wp_ajax_sms_submit_lead_step1', 'sms_handle_step1');
 add_action('wp_ajax_nopriv_sms_submit_lead_step1', 'sms_handle_step1');
+
 function sms_handle_step1() {
     global $wpdb;
     $otp = rand(1000, 9999);
     $full_phone = sanitize_text_field($_POST['phone']);
-    // Guardar si es persona o empresa en el nombre de empresa
+    
+    // Guardar si es persona o empresa
     $company = ($_POST['client_type'] == 'person') ? '(Persona Natural)' : sanitize_text_field($_POST['company']);
 
     $data = [
@@ -193,27 +210,40 @@ function sms_handle_step1() {
         'status' => 'pending',
         'created_at' => current_time('mysql')
     ];
+    
     $wpdb->insert("{$wpdb->prefix}sms_leads", $data);
     $lid = $wpdb->insert_id;
     
     if(function_exists('sms_send_msg')) {
-        $msg = "\xF0\x9F\x91\x8B Hola. Para recibir tu c\xC3\xB3digo de verificaci\xC3\xB3n, responde:\n\n\xF0\x9F\x91\x89 *WHATSAPP* (por este medio)\n\xF0\x9F\x91\x89 *EMAIL* (por correo)";
+        // Mensaje con emojis que también deben guardarse en UTF-8
+        $msg = "👋 Hola. Para recibir tu código de verificación, responde:\n\n👉 *WHATSAPP* (por este medio)\n👉 *EMAIL* (por correo)";
         sms_send_msg($full_phone, $msg);
     }
+    
     wp_send_json_success(['lead_id' => $lid]);
 }
 
 add_action('wp_ajax_sms_verify_otp', 'sms_handle_step2');
 add_action('wp_ajax_nopriv_sms_verify_otp', 'sms_handle_step2');
+
 function sms_handle_step2() {
     global $wpdb;
     $lid = intval($_POST['lead_id']);
     $code = sanitize_text_field($_POST['code']);
+    
     $row = $wpdb->get_row("SELECT * FROM {$wpdb->prefix}sms_leads WHERE id = $lid");
+    
     if ($row && $row->verification_code == $code) {
         $wpdb->update("{$wpdb->prefix}sms_leads", ['is_verified' => 1], ['id' => $lid]);
+        
+        // Notificar al Admin
         $admin_phone = get_option('sms_admin_phone');
-        if($admin_phone && function_exists('sms_send_msg')) sms_send_msg($admin_phone, "\xF0\x9F\x94\x94 Nueva cotizaci\xC3\xB3n #$lid verificada.");
+        if($admin_phone && function_exists('sms_send_msg')) {
+            sms_send_msg($admin_phone, "🔔 Nueva cotización #$lid verificada y lista para revisión.");
+        }
+        
         wp_send_json_success();
-    } else { wp_send_json_error(); }
+    } else { 
+        wp_send_json_error(); 
+    }
 }
