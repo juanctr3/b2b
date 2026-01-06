@@ -7,25 +7,49 @@ if (!defined('ABSPATH')) exit;
 function sms_send_msg($to, $msg) {
     $url = "https://whatsapp.smsenlinea.com/api/send/whatsapp";
     
+    // 1. CORRECCIÓN: Limpiar el número (Quitar el '+' para evitar errores de API)
+    $to = str_replace('+', '', $to);
+    $to = preg_replace('/[^0-9]/', '', $to); // Asegurar que solo van números
+
+    // Verificar credenciales antes de enviar
+    $secret = get_option('sms_api_secret');
+    $account = get_option('sms_account_id');
+
+    if (empty($secret) || empty($account)) {
+        error_log("SMS Error: Credenciales de API no configuradas en el panel.");
+        return;
+    }
+
     // Preparar payload
     $data = [
-        "secret"    => get_option('sms_api_secret'),
-        "account"   => get_option('sms_account_id'),
+        "secret"    => $secret,
+        "account"   => $account,
         "recipient" => $to,
         "type"      => "text",
         "message"   => $msg,
         "priority"  => 1
     ];
 
-    // Enviamos usando JSON_UNESCAPED_UNICODE para evitar que los emojis se rompan
-    wp_remote_post($url, [
+    // 2. CORRECCIÓN: Cambiar blocking a true para capturar errores
+    $response = wp_remote_post($url, [
         'body'    => json_encode($data, JSON_UNESCAPED_UNICODE), 
         'headers' => [
             'Content-Type' => 'application/json; charset=utf-8'
         ],
         'timeout'  => 15,
-        'blocking' => false // Cambia a true si necesitas depurar errores
+        'blocking' => true // IMPORTANTE: true para poder leer la respuesta
     ]);
+
+    // 3. DEBUG: Registrar respuesta en debug.log
+    if (is_wp_error($response)) {
+        error_log('SMS FALLO CONEXIÓN: ' . $response->get_error_message());
+    } else {
+        $code = wp_remote_retrieve_response_code($response);
+        $body = wp_remote_retrieve_body($response);
+        if ($code != 200 && $code != 201) {
+            error_log("SMS API ERROR ($code): " . $body);
+        }
+    }
 }
 
 // 1. NOTIFICACIÓN A PROVEEDORES (Cuando se aprueba un lead)
@@ -160,15 +184,6 @@ function sms_handle_incoming_interaction($req) {
                             $info = "$e_party *Compra Exitosa*\nNuevo saldo: ".($bal - $lead->cost_credits)."\n\nDatos:\n$e_build ".($lead->client_company?:'Particular')."\n$e_user {$lead->client_name}\n$e_phone +{$lead->client_phone}\n$e_mail {$lead->client_email}\n$e_memo {$lead->requirement}";
                             sms_send_msg($phone_sender, $info);
 
-                            // NUEVO: Notificar al Cliente también (Opcional, si quieres replicar la lógica de unlock-logic aquí)
-                            // Si deseas que la compra por WhatsApp TAMBIÉN avise al cliente, descomenta esto:
-                            /*
-                            $prov_name = $u->display_name;
-                            $wa_link = "https://wa.me/" . str_replace('+', '', $phone_sender);
-                            $msg_cliente = "👋 Hola {$lead->client_name}.\n✅ La empresa *{$prov_name}* ha aceptado tu solicitud.\n📞 Contacto: +{$phone_sender}\nWhatsApp: $wa_link";
-                            sms_send_msg($lead->client_phone, $msg_cliente);
-                            */
-
                         } else {
                             sms_send_msg($phone_sender, "$e_x Saldo insuficiente.");
                         }
@@ -180,11 +195,15 @@ function sms_handle_incoming_interaction($req) {
         }
         // C. Verificación de Cliente (Solicita Código)
         elseif (strpos($msg_body, 'WHATSAPP') !== false) {
+            // Se quitó el + antes, así que buscamos usando LIKE
             $lead = $wpdb->get_row("SELECT * FROM {$wpdb->prefix}sms_leads WHERE client_phone LIKE '%$phone_sender' AND is_verified = 0 ORDER BY created_at DESC LIMIT 1");
             $otp_key = 'sms_otp_lock_' . $phone_sender;
             if ($lead && !get_transient($otp_key)) {
                 sms_send_msg($phone_sender, "$e_lock Tu código de verificación: *{$lead->verification_code}*");
                 set_transient($otp_key, true, 45);
+            } else {
+                // DEBUG: Si no encuentra lead
+                error_log("No se encontró lead pendiente para $phone_sender o ya se envió código.");
             }
         }
         // D. Verificación de Cliente (Pide Email)
